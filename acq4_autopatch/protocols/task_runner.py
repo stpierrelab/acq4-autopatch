@@ -91,10 +91,11 @@ class TaskRunnerPatchProtocol(PatchProtocol):
         self.wait([fut])
 
         # move to 10 um above cell, slow
-        pos = np.array(targetPos) + np.array([0, 0, 10e-6])
+        # pos = np.array(targetPos) + np.array([0, 0, 10e-6])
         # don't use target move here; we don't need all the obstacle avoidance.
         # fut = self.dev.pipetteDevice.goTarget(speed='fast')
-        fut = self.dev.pipetteDevice._moveToGlobal(pos, speed="slow")
+        # fut = self.dev.pipetteDevice._moveToGlobal(pos, speed="slow")
+        fut = self.dev.pipetteDevice.goApproachTarget(speed='slow')
         self.wait([fut])
 
         self.clearStateQueue()
@@ -109,7 +110,15 @@ class TaskRunnerPatchProtocol(PatchProtocol):
             except queue.Empty:
                 continue
 
-            if state.stateName in ("whole cell", "fouled", "broken"):
+            if state.stateName in ("fouled", "broken"):
+                return
+            elif state.stateName in ("whole cell"):
+                time.sleep(2)
+                tph = self.dev.testPulseHistory()
+                cp = tph['capacitance'][-100:].mean()
+                ra = tph['peakResistance'][-100:].mean()
+                self.dev.clampDevice.autoWholeCellCompensate(cp, ra) # Whole cell compensation (TBD)'
+                time.sleep(2)
                 return
             else:
                 pa.setStatus(f"cell patching: {state.stateName}")
@@ -142,10 +151,11 @@ class TaskRunnerPatchProtocol(PatchProtocol):
         illum = man.getDevice("Illumination")
 
         # set filter wheel / illumination
-        turret.setPosition(1).wait()
+        turret.setPosition(0).wait()
         time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
-        illum.SetTLIllumination(1)
-        illum.SetRLIllumination(1)
+        # illum.SetTLIllumination(1)
+        # illum.SetRLIllumination(1)
+        illum.setSourceActive('illum', 1) # Turn on brightfield
 
         # take a picture
         pa.setStatus("say cheese!")
@@ -157,17 +167,17 @@ class TaskRunnerPatchProtocol(PatchProtocol):
         # switch to RL
         turret.setPosition(0).wait()
         time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
-        illum.SetTLIllumination(2)
-        illum.SetRLIllumination(2)
+        # illum.SetTLIllumination(2)
+        # illum.SetRLIllumination(2)
+        illum.setSourceActive('illum', 0) # Turn off brightfield
         time.sleep(1)
 
-        try:
-            # take another picture
+        try: 
+            self.camera.setParams({"exposure": 0.01, "binning": (4, 4)})
             cameraParams = self.camera.getParams()
-            self.camera.setParams({"exposure": 0.05, "binning": (4, 4)})
 
-            frame = self.camera.acquireFrames(n=1, stack=False)
-            frame.saveImage(self.dh, "fluor_image.tif")
+            # frame = self.camera.acquireFrames(n=1, stack=False)
+            # frame.saveImage(self.dh, "fluor_image.tif")
 
             man = getManager()
             # TODO: select correct task runner for this pipette
@@ -191,7 +201,7 @@ class TaskRunnerPatchProtocol(PatchProtocol):
                     "regionY": 940,
                     "regionX": 8,
                     "regionW": 2032,
-                    "exposure": 0.0010134,
+                    "exposure": 0.002,
                     "binning": (4, 4),
                 }
             )
@@ -206,14 +216,16 @@ class TaskRunnerPatchProtocol(PatchProtocol):
                 raise
 
         finally:
+            # Turn off whole cell compensation
+            self.dev.clampDevice.mc.setParam('WholeCellCompEnable', 0)
             # switch off RL
-            turret.setPosition(1).wait()
-            time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
-            illum.SetTLIllumination(1)
-            illum.SetRLIllumination(1)
-
+            turret.setPosition(0).wait()
+            time.sleep(10)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
+            # illum.SetTLIllumination(1)
+            # illum.SetRLIllumination(1)
+            illum.setSourceActive('illum', 1) # Turn on brightfield
             self.camera.setParams(cameraParams)  # , autoRestart=True, autoCorrect=True)
-
+            time.sleep(5) # force pulse for 2nd otherwise camera might error out
             pa.setStatus("restart acquire video of camera")
             self.camera.start()
 
@@ -232,8 +244,10 @@ class TaskRunnerPatchProtocol(PatchProtocol):
 
     def cleanPipette(self):
         pa = self.patchAttempt
+        fut = self.dev.pipetteDevice.goHome('fast')
+        self.wait([fut])
         pa.setStatus("cleaning pipette")
-        self.clearStateQueue()
+        self.clearStateQueue()     
         fut = self.dev.setState("clean")
 
         # wait for cleaning to finish

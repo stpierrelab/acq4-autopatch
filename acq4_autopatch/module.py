@@ -171,7 +171,7 @@ class AutopatchModule(Module):
         target.circles = []
         for r in (3e-6, 5e-6):
             c = Qt.QGraphicsEllipseItem(0, 0, 1, 1)
-            c.scale(r * 2, r * 2)
+            c.setScale(r * 2)
             c.setPos(-r, -r)
             c.setPen(pg.mkPen("b"))
             c.setParentItem(target)

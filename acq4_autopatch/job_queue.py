@@ -9,7 +9,7 @@ class JobQueue(object):
     """
 
     def __init__(self, pipettes, module):
-        self.pipettes = pipettes  # {pipette_name: quadrant}
+        self.pipettes = pipettes  # {pipette_name: recordingchamber_name}
         self.module = module
         self.protocol = None
         self.all_jobs = []
@@ -52,18 +52,20 @@ class JobQueue(object):
             # all job positions
             positions = np.array([job.position for job in self.queued_jobs])
 
-            # which quadrant does this pipette belong in?
-            pip_quad = np.array(self.pipettes[pipette.name()]).astype(bool)
+            # which recording chamber does this pipette belong in?
+            # pip_quad = np.array(self.pipettes[pipette.name()]).astype(bool)
+            # chamber = man.getDevice(self.pipettes[pipette.name()])
 
             # mask cells that are not in the same quadrant
-            quad_center = np.array(self.center[:2])
-            cell_quads = positions[:, :2] > quad_center
-            quad_mask = (cell_quads == pip_quad[None, :]).all(axis=1)
+            # quad_center = np.array(self.center[:2])
+            # cell_quads = positions[:, :2] > quad_center
+            # quad_mask = (cell_quads == pip_quad[None, :]).all(axis=1)
+
 
             # find closest cell to this pipette, excluding other quads
             diff = positions - np.array(pos).reshape(1, 3)
             dist = (diff ** 2).sum(axis=1) ** 0.5
-            dist[~quad_mask] = np.inf
+            # dist[~quad_mask] = np.insf
             closest = np.argmin(dist)
             if dist[closest] == np.inf:
                 return None

@@ -46,14 +46,14 @@ class TaskRunnerPatchProtocol(PatchProtocol):
 
     def runPatchProtocol(self):
         pa = self.patchAttempt
-
-        if not self.dev.isTipClean():
-            self.cleanPipette()
+        # SKIP CLEAN CHECK
+        # if not self.dev.isTipClean():
+            # self.cleanPipette()
 
         try:
-            self.dev.setState("bath")
-            time.sleep(5)
-
+            # self.dev.setState("bath")
+            # time.sleep(5)
+            # ASSUME MODEL CELL 'WHOLE-CELL' MODE
             self.patchCell()
 
             finalState = self.dev.getState()
@@ -71,12 +71,12 @@ class TaskRunnerPatchProtocol(PatchProtocol):
         finally:
             if self.dev.broken:
                 self.swapPipette()
-            elif not self.dev.clean:
-                self.cleanPipette()
+            #elif not self.dev.clean:
+            #    self.cleanPipette()
 
     def patchCell(self):
         pa = self.patchAttempt
-
+        """ # SKIP CELL DETECTION, ASSUME WHOLE-CELL MODE
         # Set target cell position, taking error correction into account
         targetPos = pa.pipetteTargetPosition()
         if not np.all(np.isfinite(targetPos)):
@@ -121,6 +121,31 @@ class TaskRunnerPatchProtocol(PatchProtocol):
                     break
                 except state.Timeout:
                     self.checkStop()
+        """
+        while True:
+            self.checkStop()
+            try:
+                state = self.stateQueue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if state.stateName in ("whole cell"):
+                time.sleep(2)
+                tph = self.dev.testPulseHistory()
+                cp = tph['capacitance'][-100:].mean()
+                ra = tph['peakResistance'][-100:].mean()
+                self.dev.clampDevice.autoWholeCellCompensate(cp, ra) # Whole cell compensation (TBD)'
+                time.sleep(2)
+                return
+            else:
+                pa.setStatus(f"cell patching: {state.stateName}")
+
+            while True:
+                try:
+                    # raise exception if this state fails
+                    state.wait(timeout=0.2)
+                    break
+                except state.Timeout:
+                    self.checkStop()
 
     def abortPatchProtocol(self):
         pass
@@ -134,18 +159,19 @@ class TaskRunnerPatchProtocol(PatchProtocol):
         """Cell is patched; lock the stage and begin protocol.
         """
         # focus camera on cell
-        pa.setStatus("focus on cell")
-        self.camera.moveCenterToGlobal(pa.globalTargetPosition(), speed="fast", center="roi").wait()
+        # pa.setStatus("focus on cell")
+        # self.camera.moveCenterToGlobal(pa.globalTargetPosition(), speed="fast", center="roi").wait()
 
         man = getManager()
-        # turret = man.getDevice("FilterTurret")
-        # illum = man.getDevice("Illumination")
+        turret = man.getDevice("FilterTurret")
+        illum = man.getDevice("Illumination")
 
         # set filter wheel / illumination
-        # turret.setPosition(1).wait()
-        # time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
+        turret.setPosition(0).wait()
+        time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
         # illum.SetTLIllumination(1)
         # illum.SetRLIllumination(1)
+        illum.setSourceActive('illum', 1) # Turn on brightfield
 
         # take a picture
         pa.setStatus("say cheese!")
@@ -155,19 +181,20 @@ class TaskRunnerPatchProtocol(PatchProtocol):
         pa.setStatus("running whole cell protocol")
 
         # switch to RL
-        # turret.setPosition(0).wait()
-        # time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
+        turret.setPosition(0).wait()
+        time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
         # illum.SetTLIllumination(2)
         # illum.SetRLIllumination(2)
-        # time.sleep(1)
+        illum.setSourceActive('illum', 0) # Turn off brightfield
+        time.sleep(1)
 
         try:
             # take another picture
+            self.camera.setParams({"exposure": 0.01, "binning": (4, 4)})
             cameraParams = self.camera.getParams()
-            self.camera.setParams({"exposure": 0.05, "binning": (4, 4)})
 
-            frame = self.camera.acquireFrames(n=1, stack=False)
-            frame.saveImage(self.dh, "fluor_image.tif")
+            # frame = self.camera.acquireFrames(n=1, stack=False)
+            # frame.saveImage(self.dh, "fluor_image.tif")
 
             man = getManager()
             # TODO: select correct task runner for this pipette
@@ -206,14 +233,16 @@ class TaskRunnerPatchProtocol(PatchProtocol):
                 raise
 
         finally:
+            # Turn off whole cell compensation
+            self.dev.clampDevice.mc.setParam('WholeCellCompEnable', 0)
             # switch off RL
-            # turret.setPosition(1).wait()
-            # time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
+            turret.setPosition(0).wait()
+            time.sleep(10)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
             # illum.SetTLIllumination(1)
-            # illum.SetRLIllumination(1)
-
+            # illum.SetRLIlluminatacq4ion(1)
+            illum.setSourceActive('illum', 1) # Turn on brightfield
             self.camera.setParams(cameraParams)  # , autoRestart=True, autoCorrect=True)
-
+            time.sleep(5) # force pulse for 2nd otherwise camera might error out
             pa.setStatus("restart acquire video of camera")
             self.camera.start()
 
