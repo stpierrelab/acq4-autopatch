@@ -194,7 +194,7 @@ class TaskRunnerPatchProtocol(PatchProtocol):
 
             # 300 Hz
             # self.camera.setParams({'regionH': 700, 'regionY': 680, 'regionX': 8, 'regionW': 2028, 'exposure': 0.0030013})
-            # 1kHz
+            # 500Hz
             self.camera.setParams(
                 {
                     "regionH": 164,
@@ -270,7 +270,7 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
     - Clean pipette
     - Move pipette home and request swap (if broken / clogged)
 
-      Most functions are inherited from TaskRunnerPatchProtocol, except for the runProtocol which added extra steps for 2P imaging.
+      Most functions are inherited from TaskRunnerPatchProtocol
     """
 
     name = "task runner 2P"
@@ -292,11 +292,64 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
         # the signal must be delivered in the main thread (since we are not running an event loop)
         self.dev.stateManager().sigStateChanged.connect(self.devStateChanged, Qt.Qt.DirectConnection)
 
+    def patchCell(self):
+        pa = self.patchAttempt
+
+        # Set target cell position, taking error correction into account
+        targetPos = pa.pipetteTargetPosition()
+        if not np.all(np.isfinite(targetPos)):
+            raise Exception("No valid target position for this attempt (probably automatic recalibration failed)")
+
+        pa.setStatus("moving to target")
+        self.dev.pipetteDevice.setTarget(targetPos)
+
+        # move pipette to 100 um above cell, fast
+        pos = np.array(targetPos) + np.array([100e-6, 100e-6, 100e-6])
+        fut = self.dev.pipetteDevice._moveToGlobal(pos, speed="fast")
+        self.wait([fut])
+
+        # Move the stageXY to position the target in the center of 2P FOV
+        pos = np.array(targetPos) + np.array([-12.43e-6, -152.9e-6, 0]) # TBD: move this offset to global configuration
+        fut = self.camera.moveCenterToGlobal(pos, 'slow')
+        self.wait([fut])
+
+        # move pipette to 20 um above cell, slow
+        pos = np.array(targetPos) + np.array([0, 0, 20e-6])
+        # don't use target move here; we don't need all the obstacle avoidance.
+        fut = self.dev.pipetteDevice.goTarget(speed='fast')
+        fut = self.dev.pipetteDevice._moveToGlobal(pos, speed="slow")
+        self.wait([fut])
+
+        self.clearStateQueue()
+
+        # kick off cell detection; wait until patched or failed
+        pa.setStatus("cell patching")
+        self.dev.setState("cell detect")
+        while True:
+            self.checkStop()
+            try:
+                state = self.stateQueue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            if state.stateName in ("fouled", "broken"):
+                return
+            elif state.stateName in ("whole cell"):
+                time.sleep(2)
+                tph = self.dev.testPulseHistory()
+                cp = tph['capacitance'][-100:].mean()
+                ra = tph['peakResistance'][-100:].mean()
+                self.dev.clampDevice.autoWholeCellCompensate(cp, ra) # Whole cell compensation (TBD)'
+                time.sleep(2)
+                return
+            else:
+                pa.setStatus(f"cell patching: {state.stateName}")
+
     def runProtocol(self, pa):
         """Cell is patched; lock the stage and begin protocol.
         """
         # focus camera on cell
-        pa.setStatus("focus on cell")
+        pa.setStatus("focus on cell")       
         self.camera.moveCenterToGlobal(pa.globalTargetPosition(), speed="fast", center="roi").wait()
 
         man = getManager()
@@ -347,7 +400,7 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
 
             # 300 Hz
             # self.camera.setParams({'regionH': 700, 'regionY': 680, 'regionX': 8, 'regionW': 2028, 'exposure': 0.0030013})
-            # 1kHz
+            # 500Hz
             self.camera.setParams(
                 {
                     "regionH": 164,
