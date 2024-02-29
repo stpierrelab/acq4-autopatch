@@ -316,7 +316,7 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
         # move pipette to 20 um above cell, slow
         pos = np.array(targetPos) + np.array([0, 0, 20e-6])
         # don't use target move here; we don't need all the obstacle avoidance.
-        fut = self.dev.pipetteDevice.goTarget(speed='fast')
+        # fut = self.dev.pipetteDevice.goTarget(speed='fast')
         fut = self.dev.pipetteDevice._moveToGlobal(pos, speed="slow")
         self.wait([fut])
 
@@ -359,8 +359,6 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
         # set filter wheel / illumination
         turret.setPosition(0).wait()
         time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
-        # illum.SetTLIllumination(1)
-        # illum.SetRLIllumination(1)
         illum.setSourceActive('illum', 1) # Turn on brightfield
 
         # take a picture
@@ -373,8 +371,6 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
         # switch to RL
         turret.setPosition(0).wait()
         time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
-        # illum.SetTLIllumination(2)
-        # illum.SetRLIllumination(2)
         illum.setSourceActive('illum', 0) # Turn off brightfield
         time.sleep(1)
 
@@ -382,8 +378,8 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
             self.camera.setParams({"exposure": 0.01, "binning": (4, 4)})
             cameraParams = self.camera.getParams()
 
-            # frame = self.camera.acquireFrames(n=1, stack=False)
-            # frame.saveImage(self.dh, "fluor_image.tif")
+            frame = self.camera.acquireFrames(n=1, stack=False)
+            frame.saveImage(self.dh, "fluor_image.tif")
 
             man = getManager()
             # TODO: select correct task runner for this pipette
@@ -397,10 +393,15 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
                     break
 
             assert taskrunner is not None, f"No task runner found that uses {self.dev.clampDevice.name()}"
+            
+            # Adjust focus for 2P imaging
+            pos = self.camera.globalCenterPosition() + np.array([0, 0, 7.690e-6])
+            fut = self.camera.moveCenterToGlobal(pos, 'slow') # Slowly defocus
+            self.wait([fut])
 
             # 300 Hz
             # self.camera.setParams({'regionH': 700, 'regionY': 680, 'regionX': 8, 'regionW': 2028, 'exposure': 0.0030013})
-            # 500Hz
+            # 500 Hz
             self.camera.setParams(
                 {
                     "regionH": 164,
@@ -427,8 +428,6 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
             # switch off RL
             turret.setPosition(0).wait()
             time.sleep(10)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
-            # illum.SetTLIllumination(1)
-            # illum.SetRLIllumination(1)
             illum.setSourceActive('illum', 1) # Turn on brightfield
             self.camera.setParams(cameraParams)  # , autoRestart=True, autoCorrect=True)
             time.sleep(5) # force pulse for 2nd otherwise camera might error out
