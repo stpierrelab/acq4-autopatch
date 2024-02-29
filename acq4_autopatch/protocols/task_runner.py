@@ -323,6 +323,7 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
         self.clearStateQueue()
 
         # kick off cell detection; wait until patched or failed
+        """
         pa.setStatus("cell patching")
         self.dev.setState("cell detect")
         while True:
@@ -344,20 +345,50 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
                 return
             else:
                 pa.setStatus(f"cell patching: {state.stateName}")
+        """
+
+    def runPatchProtocol(self):
+        """This is a temporary serialization method to test the 2P-specific movement
+            Mock 2P recording will be performed no matter what state the patchpipette is in"""
+        pa = self.patchAttempt
+
+        if not self.dev.isTipClean():
+            self.cleanPipette()
+
+        try:
+            self.dev.setState("bath")
+            time.sleep(5)
+
+            self.patchCell()
+
+            with self.stageCameraLock.acquire() as fut:
+                pa.setStatus("Waiting for stage/camera")
+                self.wait([fut], timeout=None)
+                self.configureCamera()
+                self.runProtocol(pa)
+
+        except:
+            pa.setError(sys.exc_info())
+        finally:
+            if self.dev.broken:
+                self.swapPipette()
+            elif not self.dev.clean:
+                self.cleanPipette()
 
     def runProtocol(self, pa):
         """Cell is patched; lock the stage and begin protocol.
         """
         # focus camera on cell
+        # avoid this movement in 2P. In the future, add autofocus for 1P at this step
         pa.setStatus("focus on cell")       
-        self.camera.moveCenterToGlobal(pa.globalTargetPosition(), speed="fast", center="roi").wait()
+        # self.camera.moveCenterToGlobal(pa.globalTargetPosition(), speed="fast", center="roi").wait()
 
         man = getManager()
         turret = man.getDevice("FilterTurret")
         illum = man.getDevice("Illumination")
 
         # set filter wheel / illumination
-        turret.setPosition(0).wait()
+        turret.setPosition(1) #.wait() wait seems to be causing problem
         time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
         illum.setSourceActive('illum', 1) # Turn on brightfield
 
@@ -368,18 +399,13 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
 
         pa.setStatus("running whole cell protocol")
 
-        # switch to RL
-        turret.setPosition(0).wait()
-        time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
+        # turn off bright field
         illum.setSourceActive('illum', 0) # Turn off brightfield
         time.sleep(1)
 
         try: 
             self.camera.setParams({"exposure": 0.01, "binning": (4, 4)})
             cameraParams = self.camera.getParams()
-
-            frame = self.camera.acquireFrames(n=1, stack=False)
-            frame.saveImage(self.dh, "fluor_image.tif")
 
             man = getManager()
             # TODO: select correct task runner for this pipette
@@ -424,13 +450,32 @@ class TaskRunner2PPatchProtocol(TaskRunnerPatchProtocol):
 
         finally:
             # Turn off whole cell compensation
-            self.dev.clampDevice.mc.setParam('WholeCellCompEnable', 0)
+            # skip temporarily
+            # self.dev.clampDevice.mc.setParam('WholeCellCompEnable', 0)
+
+            # Switch to GFP filter
+            turret.setPosition(0) #.wait()
+            time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
+
+            # Adjust the focus for 1P imaging
+            pos = self.camera.globalCenterPosition() + np.array([0, 0, -7.690e-6])
+            fut = self.camera.moveCenterToGlobal(pos, 'slow') # Slowly defocus
+            self.wait([fut])
+
+            # capture a fluorescence image for record (at this point we don't care about photobleaching)
+            self.camera.setParams(cameraParams)  # default is full FOV
+            LED = man.getDevice("LDILaser470") 
+            LED.setChanHolding('TTL', 1) 
+            frame = self.camera.acquireFrames(n=1, stack=False)
+            frame.saveImage(self.dh, "fluor_image.tif")
+            LED.setChanHolding('TTL', 0) 
+
             # switch off RL
-            turret.setPosition(0).wait()
-            time.sleep(10)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
-            illum.setSourceActive('illum', 1) # Turn on brightfield
-            self.camera.setParams(cameraParams)  # , autoRestart=True, autoCorrect=True)
-            time.sleep(5) # force pulse for 2nd otherwise camera might error out
+            turret.setPosition(1) # .wait()
+            time.sleep(2)  # scope automatically changes RL/TL settings, sometimes in a bad way. sleep and set manually:
+            illum.setSourceActive('illum', 1) # Turn on brightfield            
+            time.sleep(5) # force pause for 2nd otherwise camera might error out
+
             pa.setStatus("restart acquire video of camera")
             self.camera.start()
 
